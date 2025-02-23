@@ -1,0 +1,186 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.9;
+
+import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/utils/Counters.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/utils/Strings.sol";
+import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
+
+contract NFTMarketplace is ERC721, ReentrancyGuard, Ownable {
+    using Counters for Counters.Counter;
+    using Strings for uint256;
+    using ECDSA for bytes32;
+    
+    Counters.Counter private _tokenIds;
+    Counters.Counter private _itemsSold;
+
+    struct MarketItem {
+        uint256 tokenId;
+        address payable seller;
+        address payable owner;
+        uint256 price;
+        bool sold;
+        string barcode;
+        bytes signature;
+        uint256 creationTime;
+        string assetFingerprint;
+    }
+
+    struct CreatorProfile {
+        string name;
+        string bio;
+        string profileImage;
+        bool isVerified;
+        mapping(string => bool) usedBarcodes;
+    }
+
+    mapping(uint256 => MarketItem) private idToMarketItem;
+    mapping(address => CreatorProfile) private creatorProfiles;
+    mapping(string => bool) private globalUsedBarcodes;
+    mapping(string => uint256) private barcodeToTokenId;
+
+    event MarketItemCreated(
+        uint256 indexed tokenId,
+        address seller,
+        address owner,
+        uint256 price,
+        bool sold,
+        string barcode
+    );
+
+    event BarcodeVerified(
+        uint256 indexed tokenId,
+        string barcode,
+        address verifier
+    );
+
+    event AssetProtectionUpdated(
+        uint256 indexed tokenId,
+        string assetFingerprint
+    );
+
+    constructor() ERC721("NFT Marketplace", "NFTM") {}
+
+    // Barcode validation
+    modifier validBarcode(string memory barcode) {
+        require(bytes(barcode).length > 0, "Barcode cannot be empty");
+        require(!globalUsedBarcodes[barcode], "Barcode already used");
+        _;
+    }
+
+    function generateAssetFingerprint(
+        string memory tokenURI,
+        string memory barcode,
+        address creator
+    ) private pure returns (string memory) {
+        return string(
+            abi.encodePacked(
+                keccak256(
+                    abi.encodePacked(tokenURI, barcode, creator)
+                ).toHexString()
+            )
+        );
+    }
+
+    function createToken(
+        string memory tokenURI, 
+        uint256 price,
+        string memory barcode,
+        bytes memory signature
+    ) public payable validBarcode(barcode) returns (uint256) {
+        require(validateSignature(barcode, signature), "Invalid signature");
+        
+        _tokenIds.increment();
+        uint256 newTokenId = _tokenIds.current();
+
+        string memory assetFingerprint = generateAssetFingerprint(
+            tokenURI,
+            barcode,
+            msg.sender
+        );
+
+        _mint(msg.sender, newTokenId);
+        _setTokenURI(newTokenId, tokenURI);
+        
+        createMarketItem(newTokenId, price, barcode, signature, assetFingerprint);
+        
+        globalUsedBarcodes[barcode] = true;
+        barcodeToTokenId[barcode] = newTokenId;
+        
+        return newTokenId;
+    }
+
+    function createMarketItem(
+        uint256 tokenId, 
+        uint256 price,
+        string memory barcode,
+        bytes memory signature,
+        string memory assetFingerprint
+    ) private {
+        require(price > 0, "Price must be greater than 0");
+
+        idToMarketItem[tokenId] = MarketItem(
+            tokenId,
+            payable(msg.sender),
+            payable(address(this)),
+            price,
+            false,
+            barcode,
+            signature,
+            block.timestamp,
+            assetFingerprint
+        );
+
+        _transfer(msg.sender, address(this), tokenId);
+        
+        emit MarketItemCreated(
+            tokenId,
+            msg.sender,
+            address(this),
+            price,
+            false,
+            barcode
+        );
+    }
+
+    function validateSignature(
+        string memory barcode,
+        bytes memory signature
+    ) public pure returns (bool) {
+        bytes32 messageHash = keccak256(abi.encodePacked(barcode));
+        bytes32 ethSignedMessageHash = messageHash.toEthSignedMessageHash();
+        address signer = ethSignedMessageHash.recover(signature);
+        
+        // Add any additional validation logic here
+        return signer != address(0);
+    }
+
+    function verifyBarcode(string memory barcode) public view returns (
+        bool exists,
+        uint256 tokenId,
+        address creator,
+        uint256 creationTime,
+        string memory assetFingerprint
+    ) {
+        require(bytes(barcode).length > 0, "Barcode cannot be empty");
+        
+        tokenId = barcodeToTokenId[barcode];
+        if (tokenId == 0) {
+            return (false, 0, address(0), 0, "");
+        }
+
+        MarketItem storage item = idToMarketItem[tokenId];
+        return (
+            true,
+            tokenId,
+            item.seller,
+            item.creationTime,
+            item.assetFingerprint
+        );
+    }
+
+    // Existing functions remain the same...
+    // (fetchMarketItems, fetchMyNFTs, etc.)
+}

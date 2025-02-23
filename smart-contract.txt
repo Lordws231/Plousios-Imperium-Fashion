@@ -1,0 +1,173 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.9;
+
+import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/utils/Counters.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+
+contract NFTMarketplace is ERC721, ReentrancyGuard, Ownable {
+    using Counters for Counters.Counter;
+    Counters.Counter private _tokenIds;
+    Counters.Counter private _itemsSold;
+
+    struct MarketItem {
+        uint256 tokenId;
+        address payable seller;
+        address payable owner;
+        uint256 price;
+        bool sold;
+    }
+
+    mapping(uint256 => MarketItem) private idToMarketItem;
+    mapping(address => CreatorProfile) private creatorProfiles;
+
+    struct CreatorProfile {
+        string name;
+        string bio;
+        string profileImage;
+        bool isVerified;
+    }
+
+    event MarketItemCreated(
+        uint256 indexed tokenId,
+        address seller,
+        address owner,
+        uint256 price,
+        bool sold
+    );
+
+    event ProfileUpdated(
+        address indexed creator,
+        string name,
+        string bio
+    );
+
+    constructor() ERC721("NFT Marketplace", "NFTM") {}
+
+    // Creator profile management
+    function updateProfile(
+        string memory name,
+        string memory bio,
+        string memory profileImage
+    ) public {
+        CreatorProfile storage profile = creatorProfiles[msg.sender];
+        profile.name = name;
+        profile.bio = bio;
+        profile.profileImage = profileImage;
+        
+        emit ProfileUpdated(msg.sender, name, bio);
+    }
+
+    function getProfile(address creator) 
+        public 
+        view 
+        returns (
+            string memory name,
+            string memory bio,
+            string memory profileImage,
+            bool isVerified
+        ) 
+    {
+        CreatorProfile memory profile = creatorProfiles[creator];
+        return (
+            profile.name,
+            profile.bio,
+            profile.profileImage,
+            profile.isVerified
+        );
+    }
+
+    // NFT management functions
+    function createToken(string memory tokenURI, uint256 price) 
+        public 
+        payable 
+        returns (uint256) 
+    {
+        _tokenIds.increment();
+        uint256 newTokenId = _tokenIds.current();
+
+        _mint(msg.sender, newTokenId);
+        _setTokenURI(newTokenId, tokenURI);
+        createMarketItem(newTokenId, price);
+        
+        return newTokenId;
+    }
+
+    function createMarketItem(uint256 tokenId, uint256 price) private {
+        require(price > 0, "Price must be greater than 0");
+
+        idToMarketItem[tokenId] =  MarketItem(
+            tokenId,
+            payable(msg.sender),
+            payable(address(this)),
+            price,
+            false
+        );
+
+        _transfer(msg.sender, address(this), tokenId);
+        
+        emit MarketItemCreated(
+            tokenId,
+            msg.sender,
+            address(this),
+            price,
+            false
+        );
+    }
+
+    function createMarketSale(uint256 tokenId) 
+        public 
+        payable 
+        nonReentrant 
+    {
+        MarketItem storage marketItem = idToMarketItem[tokenId];
+        uint256 price = marketItem.price;
+        
+        require(msg.value == price, "Please submit the asking price");
+
+        marketItem.seller.transfer(msg.value);
+        _transfer(address(this), msg.sender, tokenId);
+        marketItem.owner = payable(msg.sender);
+        marketItem.sold = true;
+        _itemsSold.increment();
+    }
+
+    function fetchMarketItems() public view returns (MarketItem[] memory) {
+        uint256 itemCount = _tokenIds.current();
+        uint256 unsoldItemCount = _tokenIds.current() - _itemsSold.current();
+        uint256 currentIndex = 0;
+
+        MarketItem[] memory items = new MarketItem[](unsoldItemCount);
+        for (uint256 i = 0; i < itemCount; i++) {
+            if (!idToMarketItem[i + 1].sold) {
+                MarketItem storage currentItem = idToMarketItem[i + 1];
+                items[currentIndex] = currentItem;
+                currentIndex += 1;
+            }
+        }
+        return items;
+    }
+
+    function fetchMyNFTs() public view returns (MarketItem[] memory) {
+        uint256 totalItemCount = _tokenIds.current();
+        uint256 itemCount = 0;
+        uint256 currentIndex = 0;
+
+        for (uint256 i = 0; i < totalItemCount; i++) {
+            if (idToMarketItem[i + 1].owner == msg.sender) {
+                itemCount += 1;
+            }
+        }
+
+        MarketItem[] memory items = new MarketItem[](itemCount);
+        for (uint256 i = 0; i < totalItemCount; i++) {
+            if (idToMarketItem[i + 1].owner == msg.sender) {
+                MarketItem storage currentItem = idToMarketItem[i + 1];
+                items[currentIndex] = currentItem;
+                currentIndex += 1;
+            }
+        }
+        return items;
+    }
+}
